@@ -131,7 +131,7 @@ namespace CodeWalker.GameFiles
 
 
 
-        private void ReadHeader(BinaryReader br)
+        public void ReadHeader(BinaryReader br)
         {
             CurrentFileReader = br;
 
@@ -156,25 +156,21 @@ namespace CodeWalker.GameFiles
                 case RpfEncryption.OPEN: //OpenIV style RPF with unencrypted TOC
                     break;
                 case RpfEncryption.AES:
-                    entriesdata = GTACrypto.DecryptAES(entriesdata);
-                    namesdata = GTACrypto.DecryptAES(namesdata);
+                    GTACrypto.DecryptAESDataInPlace(entriesdata, 0, entriesdata.Length, GTA5Keys.PC_AES_KEY);
+                    GTACrypto.DecryptAESDataInPlace(namesdata, 0, namesdata.Length, GTA5Keys.PC_AES_KEY);
                     IsAESEncrypted = true;
                     break;
                 case RpfEncryption.NG:
-                    entriesdata = GTACrypto.DecryptNG(entriesdata, Name, (uint)FileSize);
-                    namesdata = GTACrypto.DecryptNG(namesdata, Name, (uint)FileSize);
-                    IsNGEncrypted = true;
-                    break;
-                default: //unknown encryption type? assume NG.. never seems to get here
-                    entriesdata = GTACrypto.DecryptNG(entriesdata, Name, (uint)FileSize);
-                    namesdata = GTACrypto.DecryptNG(namesdata, Name, (uint)FileSize);
+                default:
+                    var ngKey = GTACrypto.GetNGKeyUints(Name, (uint)FileSize);
+                    GTACrypto.DecryptNGInPlace(entriesdata, 0, entriesdata.Length, ngKey);
+                    GTACrypto.DecryptNGInPlace(namesdata, 0, namesdata.Length, ngKey);
+                    IsNGEncrypted = (Encryption == RpfEncryption.NG);
                     break;
             }
 
-
             var entriesrdr = new DataReader(new MemoryStream(entriesdata));
-            var namesrdr = new DataReader(new MemoryStream(namesdata));
-            AllEntries = new List<RpfEntry>();
+            AllEntries = new List<RpfEntry>((int)EntryCount);
             TotalFileCount = 0;
             TotalFolderCount = 0;
             TotalResourceCount = 0;
@@ -182,7 +178,6 @@ namespace CodeWalker.GameFiles
 
             for (uint i = 0; i < EntryCount; i++)
             {
-                //entriesrdr.Position += 4;
                 uint y = entriesrdr.ReadUInt32();
                 uint x = entriesrdr.ReadUInt32();
                 entriesrdr.Position -= 8;
@@ -213,22 +208,27 @@ namespace CodeWalker.GameFiles
 
                 e.Read(entriesrdr);
 
-                namesrdr.Position = e.NameOffset;
-                e.Name = namesrdr.ReadString();
-                if (e.Name.Length > 256)
+                int nameOff = (int)e.NameOffset;
+                if (nameOff >= 0 && nameOff < namesdata.Length)
                 {
-                    // long names can freeze the RPFExplorer
-                    e.Name = e.Name.Substring(0, 256);
+                    int nameLen = 0;
+                    while (nameOff + nameLen < namesdata.Length && namesdata[nameOff + nameLen] != 0)
+                    {
+                        nameLen++;
+                    }
+                    if (nameLen > 256) nameLen = 256;
+                    e.Name = Encoding.UTF8.GetString(namesdata, nameOff, nameLen);
+                }
+                else
+                {
+                    e.Name = string.Empty;
                 }
                 e.NameLower = e.Name.ToLowerInvariant();
 
-                if ((e is RpfFileEntry) && string.IsNullOrEmpty(e.Name))
-                {
-                }
-                if ((e is RpfResourceFileEntry))// && string.IsNullOrEmpty(e.Name))
+                if ((e is RpfResourceFileEntry))
                 {
                     var rfe = e as RpfResourceFileEntry;
-                    rfe.IsEncrypted = rfe.NameLower.EndsWith(".ysc");//any other way to know..?
+                    rfe.IsEncrypted = rfe.NameLower.EndsWith(".ysc");
                 }
 
                 AllEntries.Add(e);
@@ -548,16 +548,14 @@ namespace CodeWalker.GameFiles
                 {
                     if (IsAESEncrypted)
                     {
-                        decr = GTACrypto.DecryptAES(tbytes);
+                        GTACrypto.DecryptAESDataInPlace(tbytes, 0, tbytes.Length, GTA5Keys.PC_AES_KEY);
                     }
-                    else //if (IsNGEncrypted) //assume the archive is set to NG encryption if not AES... (comment: fix for openIV modded files)
+                    else
                     {
-                        decr = GTACrypto.DecryptNG(tbytes, entry.Name, entry.FileUncompressedSize);
+                        var ngKey = GTACrypto.GetNGKeyUints(entry.Name, entry.FileUncompressedSize);
+                        GTACrypto.DecryptNGInPlace(tbytes, 0, tbytes.Length, ngKey);
                     }
-                    //else
-                    //{ }
                 }
-
                 byte[] defl = decr;
 
                 if (entry.FileSize > 0) //apparently this means it's compressed
@@ -601,17 +599,17 @@ namespace CodeWalker.GameFiles
                 {
                     if (IsAESEncrypted)
                     {
-                        decr = GTACrypto.DecryptAES(tbytes);
+                        GTACrypto.DecryptAESDataInPlace(tbytes, 0, tbytes.Length, GTA5Keys.PC_AES_KEY);
                     }
-                    else //if (IsNGEncrypted) //assume the archive is set to NG encryption if not AES... (comment: fix for openIV modded files)
+                    else
                     {
-                        decr = GTACrypto.DecryptNG(tbytes, entry.Name, entry.FileSize);
+                        var ngKey = GTACrypto.GetNGKeyUints(entry.Name, entry.FileSize);
+                        GTACrypto.DecryptNGInPlace(tbytes, 0, tbytes.Length, ngKey);
                     }
-                    //else
-                    //{ }
                 }
 
-                byte[] deflated = DecompressBytes(decr);
+                int expectedSize = entry.SystemSize + entry.GraphicsSize;
+                byte[] deflated = DecompressBytes(decr, expectedSize);
 
                 byte[] data = null;
 
@@ -896,23 +894,21 @@ namespace CodeWalker.GameFiles
 
 
 
-        public byte[] DecompressBytes(byte[] bytes)
+        public byte[] DecompressBytes(byte[] bytes, int expectedSize = 0)
         {
             try
             {
                 using (DeflateStream ds = new DeflateStream(new MemoryStream(bytes), CompressionMode.Decompress))
                 {
-                    using (var outstr = new MemoryStream())
+                    int capacity = expectedSize > 0 ? expectedSize : bytes.Length * 3;
+                    using (var outstr = new MemoryStream(capacity))
                     {
                         ds.CopyTo(outstr);
-                        byte[] deflated = outstr.GetBuffer();
-                        byte[] outbuf = new byte[outstr.Length]; //need to copy to the right size buffer for output.
-                        Buffer.BlockCopy(deflated, 0, outbuf, 0, outbuf.Length);
+                        byte[] outbuf = outstr.ToArray();
 
                         if (outbuf.Length <= bytes.Length)
                         {
                             LastError = "Warning: Decompressed data was smaller than compressed data...";
-                            //return null; //could still be OK for tiny things!
                         }
 
                         return outbuf;
@@ -921,7 +917,7 @@ namespace CodeWalker.GameFiles
             }
             catch (Exception ex)
             {
-                LastError = "Could not decompress.";// ex.ToString();
+                LastError = "Could not decompress.";
                 LastException = ex;
                 return null;
             }

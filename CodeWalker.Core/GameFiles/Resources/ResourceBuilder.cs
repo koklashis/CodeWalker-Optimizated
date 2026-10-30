@@ -673,17 +673,18 @@ namespace CodeWalker.GameFiles
         }
         public static byte[] Decompress(byte[] data)
         {
+            if (data == null) return null;
             using (MemoryStream ms = new MemoryStream(data))
             {
-                DeflateStream ds = new DeflateStream(ms, CompressionMode.Decompress);
-                MemoryStream outstr = new MemoryStream();
-                ds.CopyTo(outstr);
-                byte[] deflated = outstr.GetBuffer();
-                byte[] outbuf = new byte[outstr.Length]; //need to copy to the right size buffer...
-                Array.Copy(deflated, outbuf, outbuf.Length);
-                return outbuf;
+                using (DeflateStream ds = new DeflateStream(ms, CompressionMode.Decompress))
+                {
+                    using (MemoryStream outstr = new MemoryStream(data.Length * 3))
+                    {
+                        ds.CopyTo(outstr);
+                        return outstr.ToArray();
+                    }
+                }
             }
         }
-
     }
 }

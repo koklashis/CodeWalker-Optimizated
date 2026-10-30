@@ -1,4 +1,4 @@
-﻿/*
+/*
     Copyright(c) 2015 Neodymium
 
     Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -20,17 +20,12 @@
     THE SOFTWARE.
 */
 
-//shamelessly stolen
-
-
-
 using SharpDX;
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Text;
-using System.Threading.Tasks;
 
 namespace CodeWalker.GameFiles
 {
@@ -56,46 +51,40 @@ namespace CodeWalker.GameFiles
 
     public class DataReader
     {
-        private Stream baseStream;
+        protected Stream baseStream;
+
+        [ThreadStatic]
+        private static byte[] _threadBuffer;
+
+        protected static byte[] GetThreadBuffer()
+        {
+            return _threadBuffer ?? (_threadBuffer = new byte[64]);
+        }
 
         /// <summary>
         /// Gets or sets the endianess of the underlying stream.
         /// </summary>
-        public Endianess Endianess
-        {
-            get;
-            set;
-        }
+        public Endianess Endianess { get; set; }
 
         /// <summary>
         /// Gets the length of the underlying stream.
         /// </summary>
-        public virtual long Length
-        {
-            get
-            {
-                return baseStream.Length;
-            }
-        }
+        public virtual long Length => baseStream?.Length ?? 0;
 
         /// <summary>
         /// Gets or sets the position within the underlying stream.
         /// </summary>
         public virtual long Position
         {
-            get
-            {
-                return baseStream.Position;
-            }
+            get => baseStream?.Position ?? 0;
             set
             {
-                baseStream.Position = value;
+                if (baseStream != null) baseStream.Position = value;
             }
         }
 
-        /// <summary>
-        /// Initializes a new data reader for the specified stream.
-        /// </summary>
+        public Stream BaseStream => baseStream;
+
         public DataReader(Stream stream, Endianess endianess = Endianess.LittleEndian)
         {
             this.baseStream = stream;
@@ -103,35 +92,52 @@ namespace CodeWalker.GameFiles
         }
 
         /// <summary>
-        /// Reads data from the underlying stream. This is the only method that directly accesses
-        /// the data in the underlying stream.
+        /// Reads data from the underlying stream into a new buffer.
         /// </summary>
         protected virtual byte[] ReadFromStream(int count, bool ignoreEndianess = false)
         {
             var buffer = new byte[count];
-            baseStream.Read(buffer, 0, count);
-
-            // handle endianess
-            if (!ignoreEndianess && (Endianess == Endianess.BigEndian))
-            {
-                Array.Reverse(buffer);
-            }
-
+            ReadFromStreamInternal(buffer, 0, count, ignoreEndianess);
             return buffer;
         }
 
-        /// <summary>
-        /// Reads a byte.
-        /// </summary>
-        public byte ReadByte()
+        protected virtual void ReadFromStreamInternal(byte[] buffer, int offset, int count, bool ignoreEndianess = false)
         {
+            if (baseStream != null)
+            {
+                int read = 0;
+                while (read < count)
+                {
+                    int r = baseStream.Read(buffer, offset + read, count - read);
+                    if (r <= 0) break;
+                    read += r;
+                }
+            }
+
+            if (!ignoreEndianess && (Endianess == Endianess.BigEndian) && count > 1)
+            {
+                Array.Reverse(buffer, offset, count);
+            }
+        }
+
+        /// <summary>
+        /// Reads a single byte.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public virtual byte ReadByte()
+        {
+            if (baseStream != null)
+            {
+                int b = baseStream.ReadByte();
+                if (b >= 0) return (byte)b;
+            }
             return ReadFromStream(1)[0];
         }
 
         /// <summary>
         /// Reads a sequence of bytes.
         /// </summary>
-        public byte[] ReadBytes(int count)
+        public virtual byte[] ReadBytes(int count)
         {
             return ReadFromStream(count, true);
         }
@@ -139,128 +145,140 @@ namespace CodeWalker.GameFiles
         /// <summary>
         /// Reads a signed 16-bit value.
         /// </summary>
-        public short ReadInt16()
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public virtual short ReadInt16()
         {
-            return BitConverter.ToInt16(ReadFromStream(2), 0);
+            return (short)ReadUInt16();
         }
 
         /// <summary>
         /// Reads a signed 32-bit value.
         /// </summary>
-        public int ReadInt32()
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public virtual int ReadInt32()
         {
-            return BitConverter.ToInt32(ReadFromStream(4), 0);
+            return (int)ReadUInt32();
         }
 
         /// <summary>
         /// Reads a signed 64-bit value.
         /// </summary>
-        public long ReadInt64()
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public virtual long ReadInt64()
         {
-            return BitConverter.ToInt64(ReadFromStream(8), 0);
+            return (long)ReadUInt64();
         }
 
         /// <summary>
-        /// Reads an unsigned 16-bit value.
+        /// Reads an unsigned 16-bit value without allocating.
         /// </summary>
-        public ushort ReadUInt16()
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public virtual ushort ReadUInt16()
         {
-            return BitConverter.ToUInt16(ReadFromStream(2), 0);
+            byte[] buf = GetThreadBuffer();
+            ReadFromStreamInternal(buf, 0, 2, false);
+            return (ushort)(buf[0] | (buf[1] << 8));
         }
 
         /// <summary>
-        /// Reads an unsigned 32-bit value.
+        /// Reads an unsigned 32-bit value without allocating.
         /// </summary>
-        public uint ReadUInt32()
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public virtual uint ReadUInt32()
         {
-            return BitConverter.ToUInt32(ReadFromStream(4), 0);
+            byte[] buf = GetThreadBuffer();
+            ReadFromStreamInternal(buf, 0, 4, false);
+            return (uint)(buf[0] | (buf[1] << 8) | (buf[2] << 16) | (buf[3] << 24));
         }
 
         /// <summary>
-        /// Reads an unsigned 64-bit value.
+        /// Reads an unsigned 64-bit value without allocating.
         /// </summary>
-        public ulong ReadUInt64()
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public virtual ulong ReadUInt64()
         {
-            return BitConverter.ToUInt64(ReadFromStream(8), 0);
+            byte[] buf = GetThreadBuffer();
+            ReadFromStreamInternal(buf, 0, 8, false);
+            uint lo = (uint)(buf[0] | (buf[1] << 8) | (buf[2] << 16) | (buf[3] << 24));
+            uint hi = (uint)(buf[4] | (buf[5] << 8) | (buf[6] << 16) | (buf[7] << 24));
+            return ((ulong)hi << 32) | lo;
         }
 
         /// <summary>
         /// Reads a single precision floating point value.
         /// </summary>
-        public float ReadSingle()
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public virtual float ReadSingle()
         {
-            return BitConverter.ToSingle(ReadFromStream(4), 0);
+            uint val = ReadUInt32();
+            return Unsafe.As<uint, float>(ref val);
         }
 
         /// <summary>
         /// Reads a double precision floating point value.
         /// </summary>
-        public double ReadDouble()
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public virtual double ReadDouble()
         {
-            return BitConverter.ToDouble(ReadFromStream(8), 0);
+            ulong val = ReadUInt64();
+            return Unsafe.As<ulong, double>(ref val);
         }
 
         /// <summary>
-        /// Reads a string.
+        /// Reads a null-terminated UTF-8 string without per-byte allocations.
         /// </summary>
-        public string ReadString()
+        public virtual string ReadString()
         {
-            var bytes = new List<byte>();
-            var temp = ReadFromStream(1)[0];
-            while (temp != 0)
+            byte[] buf = GetThreadBuffer();
+            byte[] strBytes = buf;
+            int len = 0;
+
+            while (true)
             {
-                bytes.Add(temp);
-                temp = ReadFromStream(1)[0];
+                byte b = ReadByte();
+                if (b == 0) break;
+
+                if (len >= strBytes.Length)
+                {
+                    if (strBytes == buf)
+                    {
+                        strBytes = new byte[128];
+                        Buffer.BlockCopy(buf, 0, strBytes, 0, len);
+                    }
+                    else
+                    {
+                        Array.Resize(ref strBytes, strBytes.Length * 2);
+                    }
+                }
+                strBytes[len++] = b;
             }
 
-            return Encoding.UTF8.GetString(bytes.ToArray());
+            if (len == 0) return string.Empty;
+            return Encoding.UTF8.GetString(strBytes, 0, len);
         }
 
-
-        public Vector3 ReadVector3()
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public virtual Vector3 ReadVector3()
         {
-            Vector3 v = new Vector3();
-            v.X = ReadSingle();
-            v.Y = ReadSingle();
-            v.Z = ReadSingle();
-            return v;
-        }
-        public Vector4 ReadVector4()
-        {
-            Vector4 v = new Vector4();
-            v.X = ReadSingle();
-            v.Y = ReadSingle();
-            v.Z = ReadSingle();
-            v.W = ReadSingle();
-            return v;
+            return new Vector3(ReadSingle(), ReadSingle(), ReadSingle());
         }
 
-        public Matrix ReadMatrix()
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public virtual Vector4 ReadVector4()
+        {
+            return new Vector4(ReadSingle(), ReadSingle(), ReadSingle(), ReadSingle());
+        }
+
+        public virtual Matrix ReadMatrix()
         {
             Matrix m = new Matrix();
-            m.M11 = ReadSingle();
-            m.M21 = ReadSingle();
-            m.M31 = ReadSingle();
-            m.M41 = ReadSingle();
-            m.M12 = ReadSingle();
-            m.M22 = ReadSingle();
-            m.M32 = ReadSingle();
-            m.M42 = ReadSingle();
-            m.M13 = ReadSingle();
-            m.M23 = ReadSingle();
-            m.M33 = ReadSingle();
-            m.M43 = ReadSingle();
-            m.M14 = ReadSingle();
-            m.M24 = ReadSingle();
-            m.M34 = ReadSingle();
-            m.M44 = ReadSingle();
+            m.M11 = ReadSingle(); m.M21 = ReadSingle(); m.M31 = ReadSingle(); m.M41 = ReadSingle();
+            m.M12 = ReadSingle(); m.M22 = ReadSingle(); m.M32 = ReadSingle(); m.M42 = ReadSingle();
+            m.M13 = ReadSingle(); m.M23 = ReadSingle(); m.M33 = ReadSingle(); m.M43 = ReadSingle();
+            m.M14 = ReadSingle(); m.M24 = ReadSingle(); m.M34 = ReadSingle(); m.M44 = ReadSingle();
             return m;
         }
 
-
-
-
-        //TODO: put this somewhere else...
         public static uint SizeOf(DataType type)
         {
             switch (type)
@@ -275,70 +293,49 @@ namespace CodeWalker.GameFiles
                 case DataType.Uint64: return 8;
                 case DataType.Float: return 4;
                 case DataType.Double: return 8;
-                case DataType.String: return 0; //how long is a string..?
+                case DataType.String: return 0;
             }
         }
-
-
-
-
     }
 
     public class DataWriter
     {
-        private Stream baseStream;
+        protected Stream baseStream;
 
-        /// <summary>
-        /// Gets or sets the endianess of the underlying stream.
-        /// </summary>
-        public Endianess Endianess
+        [ThreadStatic]
+        private static byte[] _threadWriteBuffer;
+
+        protected static byte[] GetThreadBuffer()
         {
-            get;
-            set;
+            return _threadWriteBuffer ?? (_threadWriteBuffer = new byte[64]);
         }
 
-        /// <summary>
-        /// Gets the length of the underlying stream.
-        /// </summary>
-        public virtual long Length
-        {
-            get
-            {
-                return baseStream.Length;
-            }
-        }
+        public Endianess Endianess { get; set; }
 
-        /// <summary>
-        /// Gets or sets the position within the underlying stream.
-        /// </summary>
+        public virtual long Length => baseStream?.Length ?? 0;
+
         public virtual long Position
         {
-            get
-            {
-                return baseStream.Position;
-            }
+            get => baseStream?.Position ?? 0;
             set
             {
-                baseStream.Position = value;
+                if (baseStream != null) baseStream.Position = value;
             }
         }
 
-        /// <summary>
-        /// Initializes a new data writer for the specified stream.
-        /// </summary>
+        public Stream BaseStream => baseStream;
+
         public DataWriter(Stream stream, Endianess endianess = Endianess.LittleEndian)
         {
             this.baseStream = stream;
             this.Endianess = endianess;
         }
 
-        /// <summary>
-        /// Writes data to the underlying stream. This is the only method that directly accesses
-        /// the data in the underlying stream.
-        /// </summary>
         protected virtual void WriteToStream(byte[] value, bool ignoreEndianess = false)
         {
-            if (!ignoreEndianess && (Endianess == Endianess.BigEndian))
+            if (value == null || value.Length == 0 || baseStream == null) return;
+
+            if (!ignoreEndianess && (Endianess == Endianess.BigEndian) && value.Length > 1)
             {
                 var buffer = (byte[])value.Clone();
                 Array.Reverse(buffer);
@@ -350,97 +347,131 @@ namespace CodeWalker.GameFiles
             }
         }
 
-        /// <summary>
-        /// Writes a byte.
-        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Write(byte value)
         {
-            WriteToStream(new byte[] { value });
+            if (baseStream != null)
+                baseStream.WriteByte(value);
+            else
+                WriteToStream(new byte[] { value });
         }
 
-        /// <summary>
-        /// Writes a sequence of bytes.
-        /// </summary>
         public void Write(byte[] value)
         {
             WriteToStream(value, true);
         }
 
-        /// <summary>
-        /// Writes a signed 16-bit value.
-        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Write(short value)
         {
-            WriteToStream(BitConverter.GetBytes(value));
+            Write((ushort)value);
         }
 
-        /// <summary>
-        /// Writes a signed 32-bit value.
-        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Write(int value)
         {
-            WriteToStream(BitConverter.GetBytes(value));
+            Write((uint)value);
         }
 
-        /// <summary>
-        /// Writes a signed 64-bit value.
-        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Write(long value)
         {
-            WriteToStream(BitConverter.GetBytes(value));
+            Write((ulong)value);
         }
 
-        /// <summary>
-        /// Writes an unsigned 16-bit value.
-        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Write(ushort value)
         {
-            WriteToStream(BitConverter.GetBytes(value));
+            byte[] buf = GetThreadBuffer();
+            if (Endianess == Endianess.LittleEndian)
+            {
+                buf[0] = (byte)value;
+                buf[1] = (byte)(value >> 8);
+            }
+            else
+            {
+                buf[0] = (byte)(value >> 8);
+                buf[1] = (byte)value;
+            }
+            baseStream.Write(buf, 0, 2);
         }
 
-        /// <summary>
-        /// Writes an unsigned 32-bit value.
-        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Write(uint value)
         {
-            WriteToStream(BitConverter.GetBytes(value));
+            byte[] buf = GetThreadBuffer();
+            if (Endianess == Endianess.LittleEndian)
+            {
+                buf[0] = (byte)value;
+                buf[1] = (byte)(value >> 8);
+                buf[2] = (byte)(value >> 16);
+                buf[3] = (byte)(value >> 24);
+            }
+            else
+            {
+                buf[0] = (byte)(value >> 24);
+                buf[1] = (byte)(value >> 16);
+                buf[2] = (byte)(value >> 8);
+                buf[3] = (byte)value;
+            }
+            baseStream.Write(buf, 0, 4);
         }
 
-        /// <summary>
-        /// Writes an unsigned 64-bit value.
-        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Write(ulong value)
         {
-            WriteToStream(BitConverter.GetBytes(value));
+            byte[] buf = GetThreadBuffer();
+            uint lo = (uint)value;
+            uint hi = (uint)(value >> 32);
+
+            if (Endianess == Endianess.LittleEndian)
+            {
+                buf[0] = (byte)lo;
+                buf[1] = (byte)(lo >> 8);
+                buf[2] = (byte)(lo >> 16);
+                buf[3] = (byte)(lo >> 24);
+                buf[4] = (byte)hi;
+                buf[5] = (byte)(hi >> 8);
+                buf[6] = (byte)(hi >> 16);
+                buf[7] = (byte)(hi >> 24);
+            }
+            else
+            {
+                buf[0] = (byte)(hi >> 24);
+                buf[1] = (byte)(hi >> 16);
+                buf[2] = (byte)(hi >> 8);
+                buf[3] = (byte)hi;
+                buf[4] = (byte)(lo >> 24);
+                buf[5] = (byte)(lo >> 16);
+                buf[6] = (byte)(lo >> 8);
+                buf[7] = (byte)lo;
+            }
+            baseStream.Write(buf, 0, 8);
         }
 
-        /// <summary>
-        /// Writes a single precision floating point value.
-        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Write(float value)
         {
-            WriteToStream(BitConverter.GetBytes(value));
+            uint val = Unsafe.As<float, uint>(ref value);
+            Write(val);
         }
 
-        /// <summary>
-        /// Writes a double precision floating point value.
-        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Write(double value)
         {
-            WriteToStream(BitConverter.GetBytes(value));
+            ulong val = Unsafe.As<double, ulong>(ref value);
+            Write(val);
         }
 
-        /// <summary>
-        /// Writes a string.
-        /// </summary>
         public void Write(string value)
         {
-            foreach (var c in value)
-                Write((byte)c);
+            if (!string.IsNullOrEmpty(value))
+            {
+                byte[] bytes = Encoding.UTF8.GetBytes(value);
+                Write(bytes);
+            }
             Write((byte)0);
         }
-
-
 
         public void Write(Vector3 value)
         {
@@ -448,6 +479,7 @@ namespace CodeWalker.GameFiles
             Write(value.Y);
             Write(value.Z);
         }
+
         public void Write(Vector4 value)
         {
             Write(value.X);
@@ -458,26 +490,10 @@ namespace CodeWalker.GameFiles
 
         public void Write(Matrix value)
         {
-            Write(value.M11);
-            Write(value.M21);
-            Write(value.M31);
-            Write(value.M41);
-            Write(value.M12);
-            Write(value.M22);
-            Write(value.M32);
-            Write(value.M42);
-            Write(value.M13);
-            Write(value.M23);
-            Write(value.M33);
-            Write(value.M43);
-            Write(value.M14);
-            Write(value.M24);
-            Write(value.M34);
-            Write(value.M44);
+            Write(value.M11); Write(value.M21); Write(value.M31); Write(value.M41);
+            Write(value.M12); Write(value.M22); Write(value.M32); Write(value.M42);
+            Write(value.M13); Write(value.M23); Write(value.M33); Write(value.M43);
+            Write(value.M14); Write(value.M24); Write(value.M34); Write(value.M44);
         }
-
     }
-
-
-
 }

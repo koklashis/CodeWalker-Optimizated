@@ -47,6 +47,40 @@ namespace CodeWalker.GameFiles
 
         private Stream systemStream;
         private Stream graphicsStream;
+        private byte[] _dataArray;
+        private int _systemOffset;
+        private int _graphicsOffset;
+        private int _systemLength;
+        private int _graphicsLength;
+
+        public byte[] RawData => _dataArray;
+
+        private bool TryGetDataOffset(long position, int count, out int dataOffset)
+        {
+            if (_dataArray != null)
+            {
+                if ((position & SYSTEM_BASE) == SYSTEM_BASE)
+                {
+                    long relPos = position & ~SYSTEM_BASE;
+                    if (relPos >= 0 && relPos + count <= _systemLength)
+                    {
+                        dataOffset = _systemOffset + (int)relPos;
+                        return true;
+                    }
+                }
+                else if ((position & GRAPHICS_BASE) == GRAPHICS_BASE)
+                {
+                    long relPos = position & ~GRAPHICS_BASE;
+                    if (relPos >= 0 && relPos + count <= _graphicsLength)
+                    {
+                        dataOffset = _graphicsOffset + (int)relPos;
+                        return true;
+                    }
+                }
+            }
+            dataOffset = 0;
+            return false;
+        }
 
         public RpfResourceFileEntry FileEntry { get; set; }
 
@@ -91,19 +125,11 @@ namespace CodeWalker.GameFiles
             FileEntry = resentry;
             var systemSize = resentry.SystemSize;
             var graphicsSize = resentry.GraphicsSize;
-
-            //if (data != null)
-            //{
-            //    if (systemSize > data.Length)
-            //    {
-            //        systemSize = data.Length;
-            //        graphicsSize = 0;
-            //    }
-            //    else if ((systemSize + graphicsSize) > data.Length)
-            //    {
-            //        graphicsSize = data.Length - systemSize;
-            //    }
-            //}
+            this._dataArray = data;
+            this._systemOffset = 0;
+            this._graphicsOffset = systemSize;
+            this._systemLength = systemSize;
+            this._graphicsLength = graphicsSize;
 
             this.systemStream = new MemoryStream(data, 0, systemSize);
             this.graphicsStream = new MemoryStream(data, systemSize, graphicsSize);
@@ -113,6 +139,12 @@ namespace CodeWalker.GameFiles
         public ResourceDataReader(int systemSize, int graphicsSize, byte[] data, Endianess endianess = Endianess.LittleEndian)
             : base((Stream)null, endianess)
         {
+            this._dataArray = data;
+            this._systemOffset = 0;
+            this._graphicsOffset = systemSize;
+            this._systemLength = systemSize;
+            this._graphicsLength = graphicsSize;
+
             this.systemStream = new MemoryStream(data, 0, systemSize);
             this.graphicsStream = new MemoryStream(data, systemSize, graphicsSize);
             Position = 0x50000000;
@@ -124,46 +156,41 @@ namespace CodeWalker.GameFiles
         /// Reads data from the underlying stream. This is the only method that directly accesses
         /// the data in the underlying stream.
         /// </summary>
+        protected override void ReadFromStreamInternal(byte[] buffer, int offset, int count, bool ignoreEndianess = false)
+        {
+            if (TryGetDataOffset(Position, count, out int dataOffset))
+            {
+                Buffer.BlockCopy(_dataArray, dataOffset, buffer, offset, count);
+                Position += count;
+            }
+            else if ((Position & SYSTEM_BASE) == SYSTEM_BASE)
+            {
+                systemStream.Position = Position & ~0x50000000;
+                systemStream.Read(buffer, offset, count);
+                Position = systemStream.Position | 0x50000000;
+            }
+            else if ((Position & GRAPHICS_BASE) == GRAPHICS_BASE)
+            {
+                graphicsStream.Position = Position & ~0x60000000;
+                graphicsStream.Read(buffer, offset, count);
+                Position = graphicsStream.Position | 0x60000000;
+            }
+            else
+            {
+                throw new Exception("illegal position!");
+            }
+
+            if (!ignoreEndianess && (Endianess == Endianess.BigEndian) && count > 1)
+            {
+                Array.Reverse(buffer, offset, count);
+            }
+        }
+
         protected override byte[] ReadFromStream(int count, bool ignoreEndianess = false)
         {
-            if ((Position & SYSTEM_BASE) == SYSTEM_BASE)
-            {
-                // read from system stream...
-
-                systemStream.Position = Position & ~0x50000000;
-
-                var buffer = new byte[count];
-                systemStream.Read(buffer, 0, count);
-
-                // handle endianess
-                if (!ignoreEndianess && (Endianess == Endianess.BigEndian))
-                {
-                    Array.Reverse(buffer);
-                }
-
-                Position = systemStream.Position | 0x50000000;
-                return buffer;
-
-            }
-            if ((Position & GRAPHICS_BASE) == GRAPHICS_BASE)
-            {
-                // read from graphic stream...
-
-                graphicsStream.Position = Position & ~0x60000000;
-
-                var buffer = new byte[count];
-                graphicsStream.Read(buffer, 0, count);
-
-                // handle endianess
-                if (!ignoreEndianess && (Endianess == Endianess.BigEndian))
-                {
-                    Array.Reverse(buffer);
-                }
-
-                Position = graphicsStream.Position | 0x60000000;
-                return buffer;
-            }
-            throw new Exception("illegal position!");
+            var buffer = new byte[count];
+            ReadFromStreamInternal(buffer, 0, count, ignoreEndianess);
+            return buffer;
         }
 
         /// <summary>
@@ -253,142 +280,150 @@ namespace CodeWalker.GameFiles
         {
             long pos = (long)position;
             if ((pos <= 0) || (count == 0)) return null;
-            var posbackup = Position;
-            Position = pos;
-            var result = ReadBytes((int)count);
-            Position = posbackup;
-            if (cache) arrayPool[(long)position] = result;
+
+            byte[] result = new byte[count];
+            if (TryGetDataOffset(pos, (int)count, out int dataOffset))
+            {
+                Buffer.BlockCopy(_dataArray, dataOffset, result, 0, (int)count);
+            }
+            else
+            {
+                var posbackup = Position;
+                Position = pos;
+                result = ReadBytes((int)count);
+                Position = posbackup;
+            }
+            if (cache) arrayPool[pos] = result;
             return result;
         }
+
         public ushort[] ReadUshortsAt(ulong position, uint count, bool cache = true)
         {
             if ((position <= 0) || (count == 0)) return null;
 
             var result = new ushort[count];
-            var length = count * 2;
-            byte[] data = ReadBytesAt(position, length, false);
-            Buffer.BlockCopy(data, 0, result, 0, (int)length);
-
-            //var posbackup = Position;
-            //Position = position;
-            //var result2 = new ushort[count];
-            //for (uint i = 0; i < count; i++)
-            //{
-            //    result2[i] = ReadUInt16();
-            //}
-            //Position = posbackup;
+            var length = (int)count * 2;
+            if (TryGetDataOffset((long)position, length, out int dataOffset))
+            {
+                Buffer.BlockCopy(_dataArray, dataOffset, result, 0, length);
+            }
+            else
+            {
+                byte[] data = ReadBytesAt(position, (uint)length, false);
+                Buffer.BlockCopy(data, 0, result, 0, length);
+            }
 
             if (cache) arrayPool[(long)position] = result;
-
             return result;
         }
+
         public short[] ReadShortsAt(ulong position, uint count, bool cache = true)
         {
             if ((position <= 0) || (count == 0)) return null;
             var result = new short[count];
-            var length = count * 2;
-            byte[] data = ReadBytesAt(position, length, false);
-            Buffer.BlockCopy(data, 0, result, 0, (int)length);
+            var length = (int)count * 2;
+            if (TryGetDataOffset((long)position, length, out int dataOffset))
+            {
+                Buffer.BlockCopy(_dataArray, dataOffset, result, 0, length);
+            }
+            else
+            {
+                byte[] data = ReadBytesAt(position, (uint)length, false);
+                Buffer.BlockCopy(data, 0, result, 0, length);
+            }
 
             if (cache) arrayPool[(long)position] = result;
-
             return result;
         }
+
         public uint[] ReadUintsAt(ulong position, uint count, bool cache = true)
         {
             if ((position <= 0) || (count == 0)) return null;
 
             var result = new uint[count];
-            var length = count * 4;
-            byte[] data = ReadBytesAt(position, length, false);
-            Buffer.BlockCopy(data, 0, result, 0, (int)length);
-
-            //var posbackup = Position;
-            //Position = position;
-            //var result = new uint[count];
-            //for (uint i = 0; i < count; i++)
-            //{
-            //    result[i] = ReadUInt32();
-            //}
-            //Position = posbackup;
+            var length = (int)count * 4;
+            if (TryGetDataOffset((long)position, length, out int dataOffset))
+            {
+                Buffer.BlockCopy(_dataArray, dataOffset, result, 0, length);
+            }
+            else
+            {
+                byte[] data = ReadBytesAt(position, (uint)length, false);
+                Buffer.BlockCopy(data, 0, result, 0, length);
+            }
 
             if (cache) arrayPool[(long)position] = result;
-
             return result;
         }
+
         public ulong[] ReadUlongsAt(ulong position, uint count, bool cache = true)
         {
             if ((position <= 0) || (count == 0)) return null;
 
             var result = new ulong[count];
-            var length = count * 8;
-            byte[] data = ReadBytesAt(position, length, false);
-            Buffer.BlockCopy(data, 0, result, 0, (int)length);
-
-            //var posbackup = Position;
-            //Position = position;
-            //var result = new ulong[count];
-            //for (uint i = 0; i < count; i++)
-            //{
-            //    result[i] = ReadUInt64();
-            //}
-            //Position = posbackup;
+            var length = (int)count * 8;
+            if (TryGetDataOffset((long)position, length, out int dataOffset))
+            {
+                Buffer.BlockCopy(_dataArray, dataOffset, result, 0, length);
+            }
+            else
+            {
+                byte[] data = ReadBytesAt(position, (uint)length, false);
+                Buffer.BlockCopy(data, 0, result, 0, length);
+            }
 
             if (cache) arrayPool[(long)position] = result;
-
             return result;
         }
+
         public float[] ReadFloatsAt(ulong position, uint count, bool cache = true)
         {
             if ((position <= 0) || (count == 0)) return null;
 
             var result = new float[count];
-            var length = count * 4;
-            byte[] data = ReadBytesAt(position, length, false);
-            Buffer.BlockCopy(data, 0, result, 0, (int)length);
-
-            //var posbackup = Position;
-            //Position = position;
-            //var result = new float[count];
-            //for (uint i = 0; i < count; i++)
-            //{
-            //    result[i] = ReadSingle();
-            //}
-            //Position = posbackup;
+            var length = (int)count * 4;
+            if (TryGetDataOffset((long)position, length, out int dataOffset))
+            {
+                Buffer.BlockCopy(_dataArray, dataOffset, result, 0, length);
+            }
+            else
+            {
+                byte[] data = ReadBytesAt(position, (uint)length, false);
+                Buffer.BlockCopy(data, 0, result, 0, length);
+            }
 
             if (cache) arrayPool[(long)position] = result;
-
             return result;
         }
+
         public T[] ReadStructsAt<T>(ulong position, uint count, bool cache = true)
         {
             if ((position <= 0) || (count == 0)) return null;
 
             uint structsize = (uint)Marshal.SizeOf(typeof(T));
-            var length = count * structsize;
-            byte[] data = ReadBytesAt(position, length, false);
-
-            //var result2 = new T[count];
-            //Buffer.BlockCopy(data, 0, result2, 0, (int)length); //error: "object must be an array of primitives" :(
-
-            //var result = new T[count];
-            //GCHandle handle = GCHandle.Alloc(data, GCHandleType.Pinned);
-            //var h = handle.AddrOfPinnedObject();
-            //for (uint i = 0; i < count; i++)
-            //{
-            //    result[i] = Marshal.PtrToStructure<T>(h + (int)(i * structsize));
-            //}
-            //handle.Free();
+            var length = (int)(count * structsize);
 
             var result = new T[count];
             GCHandle handle = GCHandle.Alloc(result, GCHandleType.Pinned);
-            var h = handle.AddrOfPinnedObject();
-            Marshal.Copy(data, 0, h, (int)length);
-            handle.Free();
-
+            try
+            {
+                IntPtr h = handle.AddrOfPinnedObject();
+                if (TryGetDataOffset((long)position, length, out int dataOffset))
+                {
+                    Marshal.Copy(_dataArray, dataOffset, h, length);
+                }
+                else
+                {
+                    byte[] data = ReadBytesAt(position, (uint)length, false);
+                    Marshal.Copy(data, 0, h, length);
+                }
+            }
+            finally
+            {
+                handle.Free();
+            }
 
             if (cache) arrayPool[(long)position] = result;
-
             return result;
         }
         public T[] ReadStructs<T>(uint count)

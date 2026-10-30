@@ -241,3 +241,10 @@ ModelManifest.xml
 # FAKE - F# Make
 .fake/
 /Toolbar/cammodes.psd
+
+# Local benchmark and keys
+Keys/
+**/Keys/
+nuget.exe
+CodeWalker.TestBenchmark/
+

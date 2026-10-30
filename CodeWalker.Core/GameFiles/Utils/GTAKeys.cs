@@ -48,6 +48,7 @@ namespace CodeWalker.GameFiles
 
         // ng decryption/encryption expanded keys...      
         public static byte[][] PC_NG_KEYS; // 101, 272
+        public static uint[][] PC_NG_KEYS_UINTS; // 101, 68 - precomputed for zero-alloc
 
         // ng decryption tables...       
         public static uint[][][] PC_NG_DECRYPT_TABLES; // 17, 16, 256
@@ -167,14 +168,44 @@ namespace CodeWalker.GameFiles
 
         public static void LoadFromPath(string path = ".\\Keys", bool gen9 = false, string key = null)
         {
-            //PC_AES_KEY = File.ReadAllBytes(path + "\\gtav_aes_key.dat");
-            //PC_NG_KEYS = CryptoIO.ReadNgKeys(path + "\\gtav_ng_key.dat");
-            //PC_NG_DECRYPT_TABLES = CryptoIO.ReadNgTables(path + "\\gtav_ng_decrypt_tables.dat");
-            ////PC_NG_ENCRYPT_TABLES = CryptoIO.ReadNgTables(path + "\\gtav_ng_encrypt_tables.dat");
-            ////PC_NG_ENCRYPT_LUTs = CryptoIO.ReadNgLuts(path + "\\gtav_ng_encrypt_luts.dat");
-            //PC_LUT = File.ReadAllBytes(path + "\\gtav_hash_lut.dat");
+            string fullPath = Path.GetFullPath(path);
+            string aesFile = Path.Combine(fullPath, "gtav_aes_key.dat");
+            string ngFile = Path.Combine(fullPath, "gtav_ng_key.dat");
 
-            //GenerateMagicData(path);
+            if (File.Exists(aesFile) && File.Exists(ngFile))
+            {
+                PC_AES_KEY = File.ReadAllBytes(aesFile);
+                PC_NG_KEYS = CryptoIO.ReadNgKeys(ngFile);
+                PC_NG_KEYS_UINTS = new uint[PC_NG_KEYS.Length][];
+                for (int i = 0; i < PC_NG_KEYS.Length; i++)
+                {
+                    PC_NG_KEYS_UINTS[i] = new uint[PC_NG_KEYS[i].Length / 4];
+                    Buffer.BlockCopy(PC_NG_KEYS[i], 0, PC_NG_KEYS_UINTS[i], 0, PC_NG_KEYS[i].Length);
+                }
+
+                string tabFile = Path.Combine(fullPath, "gtav_ng_decrypt_tables.dat");
+                if (File.Exists(tabFile))
+                {
+                    PC_NG_DECRYPT_TABLES = CryptoIO.ReadNgTables(tabFile);
+                }
+
+                string lutFile = Path.Combine(fullPath, "gtav_hash_lut.dat");
+                if (File.Exists(lutFile))
+                {
+                    PC_LUT = File.ReadAllBytes(lutFile);
+                    GTA5Hash.LUT = PC_LUT;
+                }
+
+                string awcFile = Path.Combine(fullPath, "gtav_awc_key.dat");
+                if (File.Exists(awcFile))
+                {
+                    byte[] b4 = File.ReadAllBytes(awcFile);
+                    PC_AWC_KEY = new uint[b4.Length / 4];
+                    Buffer.BlockCopy(b4, 0, PC_AWC_KEY, 0, b4.Length);
+                }
+                return;
+            }
+
             UseMagicData(path, gen9, key);
         }
 
@@ -308,8 +339,15 @@ namespace CodeWalker.GameFiles
             Buffer.BlockCopy(b, bp, b4, 0, b4.Length * 4); bp += b4.Length; // 16
 
             PC_NG_KEYS = CryptoIO.ReadNgKeys(b1);
+            PC_NG_KEYS_UINTS = new uint[PC_NG_KEYS.Length][];
+            for (int i = 0; i < PC_NG_KEYS.Length; i++)
+            {
+                PC_NG_KEYS_UINTS[i] = new uint[PC_NG_KEYS[i].Length / 4];
+                Buffer.BlockCopy(PC_NG_KEYS[i], 0, PC_NG_KEYS_UINTS[i], 0, PC_NG_KEYS[i].Length);
+            }
             PC_NG_DECRYPT_TABLES = CryptoIO.ReadNgTables(b2);
             PC_LUT = b3;
+            GTA5Hash.LUT = b3;
             PC_AWC_KEY = b4;
         }
 
@@ -1459,7 +1497,8 @@ namespace CodeWalker.GameFiles
             uint result = 0;
             for (int index = 0; index < text.Length; index++)
             {
-                var temp = 1025 * (LUT[text[index]] + result);
+                byte[] lut = LUT ?? GTA5Keys.PC_LUT;
+                var temp = 1025 * (lut[(byte)text[index]] + result);
                 result = (temp >> 6) ^ temp;
             }
 

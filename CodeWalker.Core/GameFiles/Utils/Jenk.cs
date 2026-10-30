@@ -1,13 +1,13 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading.Tasks;
 
 namespace CodeWalker.GameFiles
 {
-
     public class JenkHash
     {
         public JenkHashInputEncoding Encoding { get; set; }
@@ -25,29 +25,71 @@ namespace CodeWalker.GameFiles
             HashHex = "0x" + HashUint.ToString("X");
         }
 
-
         public static uint GenHash(string text, JenkHashInputEncoding encoding)
         {
+            if (string.IsNullOrEmpty(text)) return 0;
             uint h = 0;
-            byte[] chars;
 
-            switch (encoding)
+            if (encoding == JenkHashInputEncoding.ASCII)
             {
-                default:
-                case JenkHashInputEncoding.UTF8:
-                    chars = UTF8Encoding.UTF8.GetBytes(text);
-                    break;
-                case JenkHashInputEncoding.ASCII:
-                    chars = ASCIIEncoding.ASCII.GetBytes(text);
-                    break;
+                for (int i = 0; i < text.Length; i++)
+                {
+                    h += (byte)text[i];
+                    h += (h << 10);
+                    h ^= (h >> 6);
+                }
+            }
+            else
+            {
+                for (int i = 0; i < text.Length; i++)
+                {
+                    char c = text[i];
+                    if (c < 0x80)
+                    {
+                        h += (byte)c;
+                        h += (h << 10);
+                        h ^= (h >> 6);
+                    }
+                    else if (c < 0x800)
+                    {
+                        h += (byte)(0xC0 | (c >> 6));
+                        h += (h << 10);
+                        h ^= (h >> 6);
+                        h += (byte)(0x80 | (c & 0x3F));
+                        h += (h << 10);
+                        h ^= (h >> 6);
+                    }
+                    else if (char.IsSurrogate(c) && i + 1 < text.Length && char.IsSurrogatePair(c, text[i + 1]))
+                    {
+                        int codePoint = char.ConvertToUtf32(c, text[++i]);
+                        h += (byte)(0xF0 | (codePoint >> 18));
+                        h += (h << 10);
+                        h ^= (h >> 6);
+                        h += (byte)(0x80 | ((codePoint >> 12) & 0x3F));
+                        h += (h << 10);
+                        h ^= (h >> 6);
+                        h += (byte)(0x80 | ((codePoint >> 6) & 0x3F));
+                        h += (h << 10);
+                        h ^= (h >> 6);
+                        h += (byte)(0x80 | (codePoint & 0x3F));
+                        h += (h << 10);
+                        h ^= (h >> 6);
+                    }
+                    else
+                    {
+                        h += (byte)(0xE0 | (c >> 12));
+                        h += (h << 10);
+                        h ^= (h >> 6);
+                        h += (byte)(0x80 | ((c >> 6) & 0x3F));
+                        h += (h << 10);
+                        h ^= (h >> 6);
+                        h += (byte)(0x80 | (c & 0x3F));
+                        h += (h << 10);
+                        h ^= (h >> 6);
+                    }
+                }
             }
 
-            for (uint i = 0; i < chars.Length; i++)
-            {
-                h += chars[i];
-                h += (h << 10);
-                h ^= (h >> 6);
-            }
             h += (h << 3);
             h ^= (h >> 11);
             h += (h << 15);
@@ -55,6 +97,7 @@ namespace CodeWalker.GameFiles
             return h;
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static uint GenHash(string text)
         {
             if (text == null) return 0;
@@ -72,8 +115,10 @@ namespace CodeWalker.GameFiles
             return h;
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static uint GenHash(byte[] data)
         {
+            if (data == null) return 0;
             uint h = 0;
             for (uint i = 0; i < data.Length; i++)
             {
@@ -86,7 +131,6 @@ namespace CodeWalker.GameFiles
             h += (h << 15);
             return h;
         }
-
     }
 
     public enum JenkHashInputEncoding
@@ -94,7 +138,6 @@ namespace CodeWalker.GameFiles
         UTF8 = 0,
         ASCII = 1,
     }
-
 
     public class JenkIndMatch
     {
@@ -111,7 +154,6 @@ namespace CodeWalker.GameFiles
 
         public void CalculateScore()
         {
-
             int wordlength = 0;
             int wordrank = 0;
 
@@ -130,40 +172,31 @@ namespace CodeWalker.GameFiles
                 }
                 else if (okwordsymbs.Contains(c))
                 {
-                    //wordlength++; //don't add this to the score, but allow it to continue the chain
+                    //wordlength++;
                 }
                 else
                 {
                     if (wordlength > 2)
                     {
-                        wordrank += wordlength; //linear word increment, ignoring 1-2char matches
+                        wordrank += wordlength;
                     }
                     wordlength = 0;
                 }
-
-                //wordrank += wordlength; //each sequential letter in a word contributes more to the rank, ie. 1+2+3+4+...
             }
             if (wordlength > 2)
             {
-                wordrank += wordlength; //linear word increment, ignoring 1-2char matches
+                wordrank += wordlength;
             }
-
 
             if (Value.Length > 0)
             {
-                //the max value for a given length when 1+2+3+4+5+..n = n(n+1)/2
-                //double n = (double)Value.Length;
-                //double maxscore = n * (n + 1.0) * 0.5;
-
                 double n = (double)Value.Length;
                 Score = (((double)wordrank) / n);
-                //Score = (((double)wordrank));
             }
             else
             {
                 Score = 0.0;
             }
-
         }
 
         public override string ToString()
@@ -189,12 +222,6 @@ namespace CodeWalker.GameFiles
             return string.Format("{0} : {1} at line {2}", Filename, Excuse, Line);
         }
     }
-
-
-
-
-
-
 
     public static class JenkIndex
     {
@@ -236,6 +263,7 @@ namespace CodeWalker.GameFiles
             }
             return res;
         }
+
         public static string TryGetString(uint hash)
         {
             string res;
@@ -258,8 +286,5 @@ namespace CodeWalker.GameFiles
             }
             return res;
         }
-
     }
-
-
 }
